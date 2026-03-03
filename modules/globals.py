@@ -16,3 +16,7 @@ raw_text2 = get_setting('raw_text2', '480')
 quality = get_setting('quality', '480p')
 res = get_setting('res', '854x480')
 topic = get_setting('topic', '/d')
+
+# FIX: Track active conversations to prevent duplicate handler triggers
+# This prevents infinite loops when bot.listen() is waiting for input
+active_conversations = {}
