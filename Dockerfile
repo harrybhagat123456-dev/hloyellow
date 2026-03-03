@@ -35,8 +35,7 @@ COPY . .
 
 # Install Python dependencies
 # Added setuptools to fix 'pkg_resources' error on Render/Alpine
-RUN pip3 install --no-cache-dir --upgrade pip \
-    && pip3 install --no-cache-dir setuptools \
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel \
     && pip3 install --no-cache-dir --upgrade -r sainibots.txt \
     && python3 -m pip install -U yt-dlp
 
