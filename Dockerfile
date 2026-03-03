@@ -34,7 +34,9 @@ RUN wget -q https://github.com/axiomatic-systems/Bento4/archive/v1.6.0-639.zip &
 COPY . .
 
 # Install Python dependencies
+# Added setuptools to fix 'pkg_resources' error on Render/Alpine
 RUN pip3 install --no-cache-dir --upgrade pip \
+    && pip3 install --no-cache-dir setuptools \
     && pip3 install --no-cache-dir --upgrade -r sainibots.txt \
     && python3 -m pip install -U yt-dlp
 
