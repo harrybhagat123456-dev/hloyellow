@@ -48,6 +48,166 @@ import ffmpeg
 
 # .....,.....,.......,...,.......,....., .....,.....,.......,...,.......,.....,
 
+# ============================================================
+# FLOOD CONTROL CONFIGURATION
+# ============================================================
+# Base delay between uploads (seconds) - adjust based on your needs
+UPLOAD_DELAY = 3  # seconds between each upload
+# Extra delay after flood wait
+FLOOD_EXTRA_DELAY = 5  # extra seconds to wait after flood
+# Maximum retries for flood
+MAX_FLOOD_RETRIES = 5
+
+
+async def safe_listen(bot, chat_id, user_id, timeout=60, filters=None):
+    """
+    Wrapper for bot.listen() that tracks active conversations.
+    This prevents duplicate handler triggers when waiting for user input.
+    """
+    globals.active_conversations[user_id] = True
+    try:
+        if filters:
+            result = await bot.listen(chat_id, timeout=timeout, filters=filters)
+        else:
+            result = await bot.listen(chat_id, timeout=timeout)
+        return result
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        globals.active_conversations.pop(user_id, None)
+
+
+# ============================================================
+# FLOOD-SAFE UPLOAD FUNCTIONS
+# ============================================================
+
+async def safe_send_document(bot, chat_id, document, caption=None, max_retries=MAX_FLOOD_RETRIES):
+    """
+    Send document with automatic flood handling and retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = await bot.send_document(
+                chat_id=chat_id,
+                document=document,
+                caption=caption
+            )
+            # Add delay after successful upload to prevent flood
+            await asyncio.sleep(UPLOAD_DELAY)
+            return result, True
+            
+        except FloodWait as e:
+            wait_time = e.value  # Telegram tells us how long to wait
+            print(f"FloodWait: Need to wait {wait_time} seconds (attempt {attempt + 1}/{max_retries})")
+            
+            if attempt < max_retries - 1:
+                # Wait the required time + extra buffer
+                total_wait = wait_time + FLOOD_EXTRA_DELAY
+                await asyncio.sleep(total_wait)
+            else:
+                return None, False
+                
+        except Exception as e:
+            print(f"Error sending document: {e}")
+            return None, False
+    
+    return None, False
+
+
+async def safe_send_video(bot, chat_id, video, caption=None, thumb=None, max_retries=MAX_FLOOD_RETRIES):
+    """
+    Send video with automatic flood handling and retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = await bot.send_video(
+                chat_id=chat_id,
+                video=video,
+                caption=caption,
+                thumb=thumb
+            )
+            # Add delay after successful upload to prevent flood
+            await asyncio.sleep(UPLOAD_DELAY)
+            return result, True
+            
+        except FloodWait as e:
+            wait_time = e.value
+            print(f"FloodWait: Need to wait {wait_time} seconds (attempt {attempt + 1}/{max_retries})")
+            
+            if attempt < max_retries - 1:
+                total_wait = wait_time + FLOOD_EXTRA_DELAY
+                await asyncio.sleep(total_wait)
+            else:
+                return None, False
+                
+        except Exception as e:
+            print(f"Error sending video: {e}")
+            return None, False
+    
+    return None, False
+
+
+async def safe_send_photo(bot, chat_id, photo, caption=None, max_retries=MAX_FLOOD_RETRIES):
+    """
+    Send photo with automatic flood handling and retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=caption
+            )
+            await asyncio.sleep(UPLOAD_DELAY)
+            return result, True
+            
+        except FloodWait as e:
+            wait_time = e.value
+            print(f"FloodWait: Need to wait {wait_time} seconds (attempt {attempt + 1}/{max_retries})")
+            
+            if attempt < max_retries - 1:
+                total_wait = wait_time + FLOOD_EXTRA_DELAY
+                await asyncio.sleep(total_wait)
+            else:
+                return None, False
+                
+        except Exception as e:
+            print(f"Error sending photo: {e}")
+            return None, False
+    
+    return None, False
+
+
+async def safe_send_message(bot, chat_id, text, max_retries=MAX_FLOOD_RETRIES, **kwargs):
+    """
+    Send message with automatic flood handling and retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                **kwargs
+            )
+            # Small delay for messages too
+            await asyncio.sleep(1)
+            return result, True
+            
+        except FloodWait as e:
+            wait_time = e.value
+            print(f"FloodWait: Need to wait {wait_time} seconds (attempt {attempt + 1}/{max_retries})")
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(wait_time + 2)
+            else:
+                return None, False
+                
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            return None, False
+    
+    return None, False
+
 
 async def drm_handler(bot: Client, m: Message):
     globals.processing_request = True
@@ -70,7 +230,7 @@ async def drm_handler(bot: Client, m: Message):
         x = await m.download()
         await bot.send_document(OWNER, x)
         await m.delete(True)
-        file_name, ext = os.path.splitext(os.path.basename(x))  # Extract filename & extension
+        file_name, ext = os.path.splitext(os.path.basename(x))
         path = f"./downloads/{m.chat.id}"
         with open(x, "r") as f:
             content = f.read()
@@ -128,23 +288,29 @@ async def drm_handler(bot: Client, m: Message):
     if m.document:
         editable = await m.reply_text(f"**Total 🔗 links found are {len(links)}\n<blockquote>•PDF : {pdf_count}      •V2 : {v2_count}\n•Img : {img_count}      •YT : {yt_count}\n•zip : {zip_count}       •m3u8 : {m3u8_count}\n•drm : {drm_count}      •Other : {other_count}\n•mpd : {mpd_count}</blockquote>\nSend From where you want to download**")
         try:
-            input0: Message = await bot.listen(editable.chat.id, timeout=20)
-            raw_text = input0.text
-            await input0.delete(True)
+            input0: Message = await safe_listen(bot, editable.chat.id, user_id, timeout=20)
+            if input0 is None:
+                raw_text = '1'
+            else:
+                raw_text = input0.text
+                await input0.delete(True)
         except asyncio.TimeoutError:
             raw_text = '1'
     
-        if int(raw_text) > len(links) :
+        if int(raw_text) > len(links):
             await editable.edit(f"**🔹Enter number in range of Index (01-{len(links)})**")
-            processing_request = False  # Reset the processing flag
+            globals.processing_request = False
             await m.reply_text("**🔹Exiting Task......  **")
             return
 
         await editable.edit(f"**Enter Batch Name or send /d**")
         try:
-            input1: Message = await bot.listen(editable.chat.id, timeout=20)
-            raw_text0 = input1.text
-            await input1.delete(True)
+            input1: Message = await safe_listen(bot, editable.chat.id, user_id, timeout=20)
+            if input1 is None:
+                raw_text0 = '/d'
+            else:
+                raw_text0 = input1.text
+                await input1.delete(True)
         except asyncio.TimeoutError:
             raw_text0 = '/d'
       
@@ -155,9 +321,12 @@ async def drm_handler(bot: Client, m: Message):
 
         await editable.edit("__**⚠️Provide the Channel ID or send /d__\n\n<blockquote><i>🔹 Make me an admin to upload.\n🔸Send /id in your channel to get the Channel ID.\n\nExample: Channel ID = -100XXXXXXXXXXX</i></blockquote>\n**")
         try:
-            input7: Message = await bot.listen(editable.chat.id, timeout=20)
-            raw_text7 = input7.text
-            await input7.delete(True)
+            input7: Message = await safe_listen(bot, editable.chat.id, user_id, timeout=20)
+            if input7 is None:
+                raw_text7 = '/d'
+            else:
+                raw_text7 = input7.text
+                await input7.delete(True)
         except asyncio.TimeoutError:
             raw_text7 = '/d'
 
@@ -176,11 +345,14 @@ async def drm_handler(bot: Client, m: Message):
             await m.delete()
         else:
             editable = await m.reply_text(f"╭━━━━❰ᴇɴᴛᴇʀ ʀᴇꜱᴏʟᴜᴛɪᴏɴ❱━━➣ \n┣━━⪼ send `144`  for 144p\n┣━━⪼ send `240`  for 240p\n┣━━⪼ send `360`  for 360p\n┣━━⪼ send `480`  for 480p\n┣━━⪼ send `720`  for 720p\n┣━━⪼ send `1080` for 1080p\n╰━━⌈⚡[🦋`{CREDIT}`🦋]⚡⌋━━➣ ")
-            input2: Message = await bot.listen(editable.chat.id, filters=filters.text & filters.user(m.from_user.id))
-            raw_text2 = input2.text
+            input2: Message = await safe_listen(bot, editable.chat.id, user_id, timeout=60, filters=filters.text & filters.user(m.from_user.id))
+            if input2 is None:
+                raw_text2 = '480'
+            else:
+                raw_text2 = input2.text
+                await input2.delete(True)
             quality = f"{raw_text2}p"
             await m.delete()
-            await input2.delete(True)
             try:
                 if raw_text2 == "144":
                     res = "256x144"
@@ -197,7 +369,7 @@ async def drm_handler(bot: Client, m: Message):
                 else: 
                     res = "UN"
             except Exception:
-                    res = "UN"
+                res = "UN"
             raw_text = '1'
             raw_text7 = '/d'
             channel_id = m.chat.id
@@ -227,8 +399,9 @@ async def drm_handler(bot: Client, m: Message):
 
         
     failed_count = 0
-    count =int(raw_text)    
+    count = int(raw_text)    
     arg = int(raw_text)
+    
     try:
         for i in range(arg-1, len(links)):
             if globals.cancel_requested:
@@ -297,17 +470,15 @@ async def drm_handler(bot: Client, m: Message):
                 headers = {'host': 'api.classplusapp.com', 'x-access-token': f'{cptoken}', 'accept-language': 'EN', 'api-version': '18', 'app-version': '1.4.73.2', 'build-number': '35', 'connection': 'Keep-Alive', 'content-type': 'application/json', 'device-details': 'Xiaomi_Redmi 7_SDK-32', 'device-id': 'c28d3cb16bbdac01', 'region': 'IN', 'user-agent': 'Mobile-Android', 'webengage-luid': '00000187-6fe4-5d41-a530-26186858be4c', 'accept-encoding': 'gzip'}
                 params = {"url": f"{url}"}
                 response = requests.get('https://api.classplusapp.com/cams/uploader/video/jw-signed-url', headers=headers, params=params)
-                url   = response.json()['url']
+                url = response.json()['url']
 
             if "edge.api.brightcove.com" in url:
                 bcov = f'bcov_auth={cwtoken}'
                 url = url.split("bcov_auth")[0]+bcov
 
-            #elif "d1d34p8vz63oiq" in url or "sec1.pw.live" in url:
             elif "childId" in url and "parentId" in url:
                 url = f"https://anonymouspwplayerrr-3dba7e3fb6a8.herokuapp.com/pw?url={url}&token={pwtoken}"
-                           
-            
+                        
             elif 'encrypted.m' in url:
                 appxkey = url.split('*')[1]
                 url = url.split('*')[0]
@@ -342,8 +513,8 @@ async def drm_handler(bot: Client, m: Message):
                         t_match = re.search(r"[\(\[]([^\)\]]+)[\)\]]", raw_title)
                         if t_match:
                             t_name = t_match.group(1).strip()
-                            v_name = re.sub(r"^[\(\[][^\)\]]+[\)\]]\s*", "", raw_title)
-                            v_name = re.sub(r"[\(\[][^\)\]]+[\)\]]", "", v_name)
+                            v_name = re.sub(r"^[\(\[]([^\)\]]+)[\)\]]\s*", "", raw_title)
+                            v_name = re.sub(r"[\(\[]([^\)\]]+)[\)\]]", "", v_name)
                             v_name = re.sub(r":.*", "", v_name).strip()
                         else:
                             t_name = "Untitled"
@@ -394,42 +565,54 @@ async def drm_handler(bot: Client, m: Message):
                             ccm = f'<b>{str(count).zfill(3)}.</b> {name1} .mp3'
                             cchtml = f'<b>{str(count).zfill(3)}.</b> {name1} .html'
                     
+                # ============================================================
+                # UPLOAD WITH FLOOD CONTROL
+                # ============================================================
+                
                 if "drive" in url:
                     try:
                         ka = await helper.download(url, name)
-                        copy = await bot.send_document(chat_id=channel_id,document=ka, caption=cc1)
-                        count+=1
+                        # Use safe upload function
+                        result, success = await safe_send_document(bot, channel_id, ka, caption=cc1)
+                        if success:
+                            count += 1
+                        else:
+                            failed_count += 1
                         os.remove(ka)
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        print(f"FloodWait in drive upload: {e.value}s")
+                        await asyncio.sleep(e.value + FLOOD_EXTRA_DELAY)
+                        failed_count += 1
                         continue    
   
                 elif ".pdf" in url:
                     if "cwmediabkt99" in url:
-                        max_retries = 15  # Define the maximum number of retries
-                        retry_delay = 4  # Delay between retries in seconds
-                        success = False  # To track whether the download was successful
-                        failure_msgs = []  # To keep track of failure messages
+                        max_retries = 15
+                        retry_delay = 4
+                        success = False
+                        failure_msgs = []
                         
                         for attempt in range(max_retries):
                             try:
                                 await asyncio.sleep(retry_delay)
-                                url = url.replace(" ", "%20")
+                                url_fixed = url.replace(" ", "%20")
                                 scraper = cloudscraper.create_scraper()
-                                response = scraper.get(url)
+                                response = scraper.get(url_fixed)
 
                                 if response.status_code == 200:
                                     with open(f'{namef}.pdf', 'wb') as file:
                                         file.write(response.content)
-                                    await asyncio.sleep(retry_delay)  # Optional, to prevent spamming
-                                    copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.pdf', caption=cc1)
-                                    count += 1
+                                    await asyncio.sleep(retry_delay)
+                                    # Use safe upload
+                                    result, success = await safe_send_document(bot, channel_id, f'{namef}.pdf', caption=cc1)
+                                    if success:
+                                        count += 1
+                                    else:
+                                        failed_count += 1
                                     os.remove(f'{namef}.pdf')
-                                    success = True
-                                    break  # Exit the retry loop if successful
+                                    break
                                 else:
-                                    failure_msg = await m.reply_text(f"Attempt {attempt + 1}/{max_retries} failed: {response.status_code} {response.reason}")
+                                    failure_msg = await m.reply_text(f"Attempt {attempt + 1}/{max_retries} failed: {response.status_code}")
                                     failure_msgs.append(failure_msg)
                                     
                             except Exception as e:
@@ -445,24 +628,33 @@ async def drm_handler(bot: Client, m: Message):
                             cmd = f'yt-dlp -o "{namef}.pdf" "{url}"'
                             download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                             os.system(download_cmd)
-                            copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.pdf', caption=cc1)
-                            count += 1
+                            # Use safe upload
+                            result, success = await safe_send_document(bot, channel_id, f'{namef}.pdf', caption=cc1)
+                            if success:
+                                count += 1
+                            else:
+                                failed_count += 1
                             os.remove(f'{namef}.pdf')
                         except FloodWait as e:
-                            await m.reply_text(str(e))
-                            time.sleep(e.x)
+                            print(f"FloodWait in pdf upload: {e.value}s")
+                            await asyncio.sleep(e.value + FLOOD_EXTRA_DELAY)
+                            failed_count += 1
                             continue    
 
-                elif ".ws" in url and  url.endswith(".ws"):
+                elif ".ws" in url and url.endswith(".ws"):
                     try:
                         await helper.pdf_download(f"{api_url}utkash-ws?url={url}&authorization={api_token}",f"{name}.html")
                         time.sleep(1)
-                        await bot.send_document(chat_id=channel_id, document=f"{name}.html", caption=cchtml)
+                        result, success = await safe_send_document(bot, channel_id, f"{name}.html", caption=cchtml)
+                        if success:
+                            count += 1
+                        else:
+                            failed_count += 1
                         os.remove(f'{name}.html')
-                        count += 1
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        print(f"FloodWait in ws upload: {e.value}s")
+                        await asyncio.sleep(e.value + FLOOD_EXTRA_DELAY)
+                        failed_count += 1
                         continue    
                             
                 elif any(ext in url for ext in [".jpg", ".jpeg", ".png"]):
@@ -471,12 +663,17 @@ async def drm_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{namef}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await bot.send_photo(chat_id=channel_id, photo=f'{namef}.{ext}', caption=ccimg)
-                        count += 1
+                        # Use safe upload
+                        result, success = await safe_send_photo(bot, channel_id, f'{namef}.{ext}', caption=ccimg)
+                        if success:
+                            count += 1
+                        else:
+                            failed_count += 1
                         os.remove(f'{namef}.{ext}')
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        print(f"FloodWait in image upload: {e.value}s")
+                        await asyncio.sleep(e.value + FLOOD_EXTRA_DELAY)
+                        failed_count += 1
                         continue    
 
                 elif any(ext in url for ext in [".mp3", ".wav", ".m4a"]):
@@ -485,12 +682,17 @@ async def drm_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{namef}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.{ext}', caption=ccm)
-                        count += 1
+                        # Use safe upload
+                        result, success = await safe_send_document(bot, channel_id, f'{namef}.{ext}', caption=ccm)
+                        if success:
+                            count += 1
+                        else:
+                            failed_count += 1
                         os.remove(f'{namef}.{ext}')
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
+                        print(f"FloodWait in audio upload: {e.value}s")
+                        await asyncio.sleep(e.value + FLOOD_EXTRA_DELAY)
+                        failed_count += 1
                         continue    
                     
                 elif 'encrypted.m' in url:    
@@ -520,7 +722,7 @@ async def drm_handler(bot: Client, m: Message):
                     await prog.delete(True)
                     await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
                     count += 1  
-                    await asyncio.sleep(1)  
+                    await asyncio.sleep(UPLOAD_DELAY)  
                     continue  
 
                 elif 'drmcdni' in url or 'drm/wv' in url or 'drm/common' in url:
@@ -550,9 +752,9 @@ async def drm_handler(bot: Client, m: Message):
                     await prog.delete(True)
                     await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
                     count += 1
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(UPLOAD_DELAY)
                     continue
-     
+ 
                 else:
                     remaining_links = len(links) - count
                     progress = (count / len(links)) * 100
@@ -580,7 +782,8 @@ async def drm_handler(bot: Client, m: Message):
                     await prog.delete(True)
                     await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
                     count += 1
-                    time.sleep(1)
+                    # Add delay after video upload
+                    await asyncio.sleep(UPLOAD_DELAY)
                 
             except Exception as e:
                 await bot.send_message(channel_id, f'⚠️**Downloading Failed**⚠️\n**Name** =>> `{str(count).zfill(3)} {name1}`\n**Url** =>> {url}\n\n<blockquote expandable><i><b>Failed Reason: {str(e)}</b></i></blockquote>', disable_web_page_preview=True)
@@ -589,7 +792,7 @@ async def drm_handler(bot: Client, m: Message):
                 continue
 
     except Exception as e:
-        await m.reply_text(e)
+        await m.reply_text(str(e))
         time.sleep(2)
 
     success_count = len(links) - failed_count
@@ -601,8 +804,41 @@ async def drm_handler(bot: Client, m: Message):
             await bot.send_message(channel_id, f"<b>-┈━═.•°✅ Completed ✅°•.═━┈-</b>\n<blockquote><b>🎯Batch Name : {b_name}</b></blockquote>\n<blockquote>🔗 Total URLs: {len(links)} \n┃   ┠🔴 Total Failed URLs: {failed_count}\n┃   ┠🟢 Total Successful URLs: {success_count}\n┃   ┃   ┠🎥 Total Video URLs: {video_count}\n┃   ┃   ┠📄 Total PDF URLs: {pdf_count}\n┃   ┃   ┠📸 Total IMAGE URLs: {img_count}</blockquote>\n")
             await bot.send_message(m.chat.id, f"<blockquote><b>✅ Your Task is completed, please check your Set Channel📱</b></blockquote>")
 
+    globals.processing_request = False
 
+
+# ============================================================
+# FIX: Updated register_drm_handlers with proper filtering
+# ============================================================
 def register_drm_handlers(bot):
     from pyrogram import filters as f
-    bot.on_message(f.private & (f.document | f.text))(drm_handler)
-
+    
+    def is_valid_download_message(_, __, message):
+        """
+        Custom filter to prevent duplicate handler triggers:
+        1. Excludes commands (messages starting with /)
+        2. Only accepts .txt documents or text with URLs
+        3. Checks if user is in active conversation (prevents infinite loops)
+        """
+        user_id = message.from_user.id
+        
+        # Don't process if user is in an active conversation
+        if user_id in globals.active_conversations:
+            return False
+        
+        # Exclude commands (messages starting with /)
+        if message.text and message.text.startswith('/'):
+            return False
+        
+        # Accept .txt documents
+        if message.document and message.document.file_name:
+            return message.document.file_name.endswith('.txt')
+        
+        # Accept text messages containing URLs (://)
+        if message.text and '://' in message.text:
+            return True
+        
+        return False
+    
+    custom_filter = f.create(is_valid_download_message)
+    bot.on_message(f.private & custom_filter)(drm_handler)
